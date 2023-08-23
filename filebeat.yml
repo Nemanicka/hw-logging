@@ -1,0 +1,15 @@
+filebeat.inputs:
+- type: log
+  enabled: true
+  paths:
+    - /usr/share/filebeat/mysql_slow_query.log
+  start_position: end
+
+output.logstash:
+  hosts: ["graylog:5044"]
+
+#output.console:
+#  pretty: true
+#processors:
+#  - add_docker_metadata:
+#      host: "unix:///host_docker/docker.sock"

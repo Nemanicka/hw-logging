@@ -1,0 +1,172 @@
+version: "3.1"
+
+services:
+  db:
+    image: mysql
+    container_name: mysql
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./data/conf.d:/etc/mysql/conf.d
+      - ./data/slow_query.log:/var/log/slow_query.log:rw
+    command: --default-authentication-plugin=mysql_native_password
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: pass
+
+  telegraf:
+    image: telegraf:1.18-alpine
+    container_name: telegraf
+    volumes:
+      - ./telegraf/etc/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - influxdb
+    links:
+      - influxdb
+    ports:
+      - "8125:8125/udp"
+
+  influxdb:
+    image: influxdb:1.8-alpine
+    container_name: influx
+    env_file: configuration.env
+    ports:
+      - "8086:8086"
+    volumes:
+      - ./imports:/imports
+      - ./influxdb-data:/var/lib/influxdb
+
+  grafana:
+    image: grafana/grafana:8.0.2
+    container_name: grafana
+    depends_on:
+      - influxdb
+    env_file: configuration.env
+    links:
+      - influxdb
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana-data:/var/lib/grafana:rw
+      - ./grafana/provisioning/:/etc/grafana/provisioning/
+      - ./grafana/dashboards/:/var/lib/grafana/dashboards/
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.8.0
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+    ports:
+      - '9200:9200'
+    volumes:
+      - es-data-1:/usr/share/elasticsearch/data
+
+  #kibana:
+  #  image: docker.elastic.co/kibana/kibana:8.8.0
+  #  container_name: kibana
+  #  ports:
+  #    - '5601:5601'
+  #  depends_on:
+  #    -  elasticsearch
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.8.0
+    container_name: logstash
+    ports:
+      - '25826:25826'
+    volumes:
+      - ./conf.d/:/etc/logstash/conf.d/
+      - /var/log/:/var/log/
+      - ./data/slow_query.log:/var/log/mysql_slow_query.log:ro
+    command: logstash -f /etc/logstash/conf.d/logstash.conf
+    environment:
+      - discovery.type=single-node
+      #   - xpack.security.enabled=false
+    links: 
+      - "elasticsearch:elasticsearch"
+    depends_on:
+      -  elasticsearch
+    restart: always
+
+  mongodb:
+    image: "mongo:5.0"
+    container_name: mongodb
+    volumes:
+      - "mongodb_data:/data/db"
+    restart: "on-failure"
+
+  opensearch:
+    image: "opensearchproject/opensearch:2.4.0"
+    container_name: opensearch
+    environment:
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+      - "bootstrap.memory_lock=true"
+      - "discovery.type=single-node"
+      - "action.auto_create_index=false"
+      - "plugins.security.ssl.http.enabled=false"
+      - "plugins.security.disabled=true"
+    ulimits:
+      memlock:
+        hard: -1
+        soft: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - "os_data:/usr/share/opensearch/data"
+    ports:
+      - '9201:9200'
+    restart: "on-failure"
+  graylog:
+    image: graylog/graylog:5.1
+    container_name: graylog
+    depends_on:
+      - opensearch
+      - mongodb
+    environment:
+      GRAYLOG_NODE_ID_FILE: "/usr/share/graylog/data/config/node-id"
+      GRAYLOG_PASSWORD_SECRET: "abcdefg123456789"
+      GRAYLOG_ROOT_PASSWORD_SHA2: "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
+      GRAYLOG_HTTP_BIND_ADDRESS: "0.0.0.0:9000"
+      GRAYLOG_ROOT_USERNAME: "admin"
+      GRAYLOG_HTTP_EXTERNAL_URI: "http://localhost:9000/"
+      GRAYLOG_ELASTICSEARCH_HOSTS: "http://opensearch:9200"
+      GRAYLOG_MONGODB_URI: "mongodb://mongodb:27017/graylog"
+      GRAYLOG_REPORT_DISABLE_SANDBOX: "false"
+    ports:
+    - "5044:5044/tcp"   # Beats
+    - "5044:5044/udp"   # Beats
+    #- "5140:5140/tcp"   # Syslog TCP
+    #- "5140:5140/udp"   # Syslog UDP
+    #- "5555:5555/tcp"   # RAW TCP
+    #- "5555:5555/udp"   # RAW TCP
+    - "9000:9000/tcp"   # Server API
+    - "12201:12201/tcp" # GELF TCP
+    - "12201:12201/udp" # GELF UDP
+    #- "13301:13301/tcp" # Forwarder data
+    #- "13302:13302/tcp" # Forwarder config
+    volumes:
+      - "./graylog/graylog.conf:/usr/share/graylog/data/config/graylog.conf"
+      - "graylog_data:/usr/share/graylog/data/data"
+      - "graylog_journal:/usr/share/graylog/data/journal"
+    restart: "on-failure"
+  filebeat:
+    container_name: filebeat
+    image: docker.elastic.co/beats/filebeat:8.8.0
+    depends_on:
+      - graylog
+    volumes:
+      - /var/run/docker.sock:/host_docker/docker.sock
+      - /var/lib/docker:/host_docker/var/lib/docker
+      - ./data/slow_query.log:/usr/share/filebeat/mysql_slow_query.log
+      - ./filebeat.yml:/usr/share/filebeat/filebeat.yml
+    command: ["--strict.perms=false"]
+
+volumes:
+  es-data-1: {}
+  mongodb_data:
+  os_data:
+  graylog_data:
+  graylog_journal:
